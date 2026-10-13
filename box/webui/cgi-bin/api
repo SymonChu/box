@@ -1,0 +1,305 @@
+#!/system/bin/sh
+# Box 订阅填写页 CGI 后端
+# 由 busybox httpd 调用，默认只监听 127.0.0.1
+# GET  /cgi-bin/api?action=form     -> 订阅填写表单
+# POST /cgi-bin/api  action=save|update|saveupdate|restart
+
+box_dir="${BOX_DIR_OVERRIDE:-/data/adb/box}"
+settings="${box_dir}/settings.ini"
+scripts_dir="${box_dir}/scripts"
+box_run="${box_dir}/run"
+
+send_head() {
+  printf 'Content-Type: text/html; charset=utf-8\r\n'
+  printf 'Cache-Control: no-store\r\n'
+  printf 'X-Content-Type-Options: nosniff\r\n'
+  printf '\r\n'
+}
+
+esc() {
+  printf '%s' "$1" | busybox sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
+}
+
+urldecode() {
+  # POSIX 安全: busybox ash 的 printf %b 不认 \xHH, busybox awk 也没有 strtonum。
+  # 用查表法: index() 算 hex 值, sprintf("%c") 出字符, 任何 awk 都支持。
+  printf '%s' "$1" | busybox sed 's/+/ /g' | busybox awk '
+    BEGIN { hex = "0123456789abcdef" }
+    {
+      while (match($0, /%[0-9A-Fa-f][0-9A-Fa-f]/)) {
+        h = tolower(substr($0, RSTART+1, 2))
+        v = (index(hex, substr(h,1,1))-1) * 16 + index(hex, substr(h,2,1)) - 1
+        c = sprintf("%c", v)
+        $0 = substr($0, 1, RSTART-1) c substr($0, RSTART+RLENGTH)
+      }
+      print
+    }'
+}
+
+# 从 urlencoded 数据里取字段（值可能含 = 号）
+field() {
+  printf '%s' "$2" | busybox awk -v want="$1" -v RS='&' '
+    { eq = index($0, "="); if (eq == 0) next;
+      k = substr($0, 1, eq - 1); v = substr($0, eq + 1);
+      if (k == want) { print v; exit } }'
+}
+
+read_setting() {
+  busybox sed -n "s/^$1=//p" "${settings}" | busybox tail -n 1 | busybox sed 's/^"//; s/"$//'
+}
+
+read_sub_url() {
+  busybox sed -n 's/^subscription_url_mihomo=(//p' "${settings}" \
+    | busybox sed 's/)$//; s/^"//; s/"$//' | busybox head -n 1
+}
+
+read_sub_name() {
+  busybox sed -n 's/^name_provide_mihomo_config=(//p' "${settings}" \
+    | busybox sed 's/)$//; s/^"//; s/"$//' | busybox head -n 1
+}
+
+# 内核面板端口（external-controller），用于页面上的跳转链接
+read_panel_port() {
+  busybox sed -n 's/^external-controller:[^0-9]*//p' "${box_dir}/mihomo/config.yaml" 2>/dev/null \
+    | busybox awk -F: '{print $NF}' | busybox head -n 1
+}
+
+# 原子替换整行（不用 sed 替换，避开 URL 里的 & # / 等特殊字符）
+replace_line() {
+  local key="$1" value="$2" tmp="${settings}.cgi.$$"
+  busybox awk -v k="${key}" -v v="${value}" '
+    BEGIN { done = 0 }
+    $0 ~ "^" k "=" && !done { print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "${settings}" > "${tmp}" && busybox mv "${tmp}" "${settings}"
+}
+
+html_head() {
+  cat <<'HTMLEOF'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Box 订阅设置</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; font: 15px/1.6 -apple-system, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+         background: #f5f5f7; color: #1d1d1f; }
+  @media (prefers-color-scheme: dark) { body { background: #111214; color: #e8e8ea; } .card { background: #1c1d20 !important; } .log { background: #0d0e10 !important; color: #b9bcc2 !important; } input { background: #0d0e10 !important; color: #e8e8ea !important; border-color: #333 !important; } }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  .sub { font-size: 12px; opacity: .6; margin-bottom: 14px; }
+  .card { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+  .card h2 { font-size: 13px; margin: 0 0 10px; opacity: .65; font-weight: 600; letter-spacing: .02em; }
+  label { display: block; font-size: 13px; opacity: .75; margin: 10px 0 4px; }
+  input[type=text] { width: 100%; padding: 11px 12px; font-size: 14px; border: 1px solid #d2d2d7;
+        border-radius: 9px; background: #fff; color: inherit; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button, .btn { flex: 1 1 auto; min-width: 108px; padding: 12px 14px; font-size: 14px; font-weight: 600;
+        border: 0; border-radius: 9px; background: #0071e3; color: #fff; cursor: pointer; text-align: center;
+        text-decoration: none; display: inline-block; }
+  button.secondary { background: #e8e8ed; color: #1d1d1f; }
+  button.ghost { background: transparent; color: #0071e3; border: 1px solid #0071e3; }
+  @media (prefers-color-scheme: dark) { button.secondary { background: #2c2d31; color: #e8e8ea; } }
+  .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 5px 0; border-bottom: 1px solid rgba(128,128,128,.15); }
+  .kv:last-child { border-bottom: 0; }
+  .kv span:last-child { opacity: .7; font-family: ui-monospace, Menlo, monospace; word-break: break-all; text-align: right; }
+  .log { background: #f0f0f2; border-radius: 9px; padding: 10px; font: 11.5px/1.5 ui-monospace, Menlo, monospace;
+         white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; }
+  .ok { color: #0a8f3c; font-weight: 600; }
+  .err { color: #d70015; font-weight: 600; }
+  .note { font-size: 12px; opacity: .6; margin-top: 8px; }
+</style>
+</head>
+<body>
+HTMLEOF
+}
+
+html_form() {
+  local url="$1" name="$2" token="$3" tip="$4"
+  local running provider_size provider_time
+  if [ -f "${box_run}/box.pid" ] && kill -0 "$(cat "${box_run}/box.pid" 2>/dev/null)" 2>/dev/null; then
+    running="运行中"
+  else
+    running="未运行"
+  fi
+  local pfile="${box_dir}/mihomo/proxy_provider/${name}"
+  if [ -f "${pfile}" ]; then
+    provider_size="$(busybox wc -c < "${pfile}" 2>/dev/null | busybox tr -d ' ') 字节"
+    provider_time="$(date -r "${pfile}" '+%m-%d %H:%M' 2>/dev/null)"
+  else
+    provider_size="（还没有）"; provider_time="—"
+  fi
+
+  html_head
+  printf '<h1>Box 订阅设置</h1>\n'
+  printf '<div class="sub">在这里填订阅地址，不用改 config.yaml</div>\n'
+  [ -n "${tip}" ] && printf '<div class="card">%s</div>\n' "${tip}"
+
+  printf '<div class="card"><h2>当前状态</h2>\n'
+  printf '<div class="kv"><span>代理内核</span><span>%s</span></div>\n' "$(esc "$(read_setting bin_name)")"
+  printf '<div class="kv"><span>内核状态</span><span>%s</span></div>\n' "${running}"
+  printf '<div class="kv"><span>已保存订阅</span><span>%s</span></div>\n' "$(esc "${url:-（空，请填写）}")"
+  printf '<div class="kv"><span>节点文件</span><span>%s</span></div>\n' "$(esc "${name}")"
+  printf '<div class="kv"><span>节点文件大小</span><span>%s</span></div>\n' "${provider_size}"
+  printf '<div class="kv"><span>节点文件更新于</span><span>%s</span></div>\n' "${provider_time}"
+  printf '<div class="kv"><span>定时更新</span><span>%s / %s</span></div>\n' \
+    "$(esc "$(read_setting update_subscription)")" "$(esc "$(read_setting interva_update)")"
+  printf '</div>\n'
+
+  printf '<form class="card" method="POST" action="/cgi-bin/api">\n'
+  printf '<h2>填写订阅</h2>\n'
+  printf '<input type="hidden" name="token" value="%s">\n' "$(esc "${token}")"
+  printf '<label for="url">订阅链接</label>\n'
+  printf '<input id="url" name="url" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://…" value="%s">\n' "$(esc "${url}")"
+  printf '<label for="name">节点文件名（一般不用改）</label>\n'
+  printf '<input id="name" name="name" type="text" autocapitalize="off" spellcheck="false" value="%s">\n' "$(esc "${name}")"
+  printf '<div class="row">\n'
+  printf '<button type="submit" name="action" value="saveupdate">保存并更新</button>\n'
+  printf '<button type="submit" name="action" value="save" class="secondary">仅保存</button>\n'
+  printf '</div>\n'
+  printf '<div class="row">\n'
+  printf '<button type="submit" name="action" value="update" class="ghost">用已保存地址立即更新</button>\n'
+  printf '<button type="submit" name="action" value="restart" class="ghost">重启代理服务</button>\n'
+  printf '</div>\n'
+  printf '<div class="note">保存后地址写入 settings.ini，并自动同步到 config.yaml 的订阅段；定时更新为每天 0/6/12/18 点。</div>\n'
+  printf '</form>\n'
+
+  printf '<div class="card"><h2>最近更新日志</h2><div class="log">%s</div>\n' "$(esc "$(busybox tail -n 18 "${box_run}/tool.log" 2>/dev/null)")"
+  local panel_port
+  panel_port="$(read_panel_port)"
+  [ -z "${panel_port}" ] && panel_port="9090"
+  printf '<div class="note"><a href="http://127.0.0.1:%s/ui/" target="_blank">打开内核面板（切节点、看连接）→</a></div></div>\n' "$(esc "${panel_port}")"
+  printf '</body></html>\n'
+}
+
+html_result() {
+  local title="$1" body="$2" token="$3"
+  html_head
+  printf '<h1>%s</h1>\n' "${title}"
+  printf '<div class="card"><div class="log">%s</div>\n' "$(esc "${body}")"
+  printf '<div class="row"><a class="btn" href="/cgi-bin/api?action=form">返回</a></div></div>\n'
+  printf '</body></html>\n'
+}
+
+fail() {
+  send_head
+  html_result "出错了" "$1" ""
+  exit 0
+}
+
+validate_url() {
+  local u="$1" leftover
+  case "$u" in
+    http://*|https://*) ;;
+    *) return 1 ;;
+  esac
+  [ "${#u}" -gt 2048 ] && return 1
+  # 白名单：只允许 URL 里合法且对 shell 安全的字符。
+  # settings.ini 会被 source，所以 " \ ` $ 空格 换行 等一律不允许出现。
+  leftover="$(printf '%s' "$u" | busybox tr -d 'A-Za-z0-9:/?=._~#%&,;@[]()!+-' )"
+  [ -n "${leftover}" ] && return 1
+  # 再单独挡掉少数白名单里但危险的组合
+  case "$u" in
+    *'&&'*|*'$'*|*'`'*|*'"'*|*"'"*|*'\\'*|*' '*|*'|'*|*'<'*|*'>'*) return 1 ;;
+  esac
+  return 0
+}
+
+validate_name() {
+  local n="$1"
+  case "$n" in
+    *.yaml|*.yml) ;;
+    *) return 1 ;;
+  esac
+  case "$n" in
+    */*|*\\*|*'"'*|*"'"*|*' '*|*'*'*|*'?'*) return 1 ;;
+  esac
+  return 0
+}
+
+token_ok() {
+  local given="$1" want
+  want="$(read_setting webui_token)"
+  [ -n "${want}" ] && [ "${given}" = "${want}" ]
+}
+
+# ---------- 主流程 ----------
+method="${REQUEST_METHOD:-GET}"
+data=""
+if [ "${method}" = "POST" ]; then
+  len="${CONTENT_LENGTH:-0}"
+  case "${len}" in ''|*[!0-9]*) len=0 ;; esac
+  [ "${len}" -gt 65536 ] && len=65536
+  [ "${len}" -gt 0 ] && data="$(busybox dd bs=1 count="${len}" 2>/dev/null)"
+else
+  data="${QUERY_STRING:-}"
+  method="GET"
+fi
+
+action="$(urldecode "$(field action "${data}")")"
+[ -z "${action}" ] && action="form"
+token="$(urldecode "$(field token "${data}")")"
+
+case "${method}:${action}" in
+  GET:form)
+    send_head
+    html_form "$(read_sub_url)" "$(read_sub_name)" "$(read_setting webui_token)" ""
+    ;;
+
+  POST:save|POST:saveupdate)
+    token_ok "${token}" || fail "安全校验失败（token 不匹配）。请从本机页面重新操作。"
+    url="$(urldecode "$(field url "${data}")")"
+    name="$(urldecode "$(field name "${data}")")"
+    [ -z "${name}" ] && name="$(read_sub_name)"
+    [ -z "${name}" ] && name="proxy1.yaml"
+    validate_url "${url}" || fail "订阅链接不合法：必须以 http:// 或 https:// 开头，且不能包含引号、空格、反斜杠、& ; | \$ 等字符。"
+    validate_name "${name}" || fail "节点文件名不合法：应以 .yaml 结尾，且不能包含路径分隔符。"
+
+    busybox cp -f "${settings}" "${settings}.bak" 2>/dev/null
+    replace_line "subscription_url_mihomo" "(\"${url}\")" || fail "写入 settings.ini 失败（subscription_url_mihomo）"
+    replace_line "name_provide_mihomo_config" "(\"${name}\")" || fail "写入 settings.ini 失败（name_provide_mihomo_config）"
+
+    if [ "${action}" = "save" ]; then
+      send_head
+      html_result "已保存" "订阅地址已写入 settings.ini：
+${url}
+
+提示：点「用已保存地址立即更新」可立刻拉取，或等每天 0/6/12/18 点的自动更新。" "${token}"
+      exit 0
+    fi
+
+    out="$(BOX_LOG_TO_STDOUT=1 "${scripts_dir}/box.tool" subs 2>&1 | busybox tail -n 25)"
+    send_head
+    html_result "已保存并更新" "订阅地址已写入 settings.ini：
+${url}
+
+更新输出（末尾 25 行）：
+${out}" "${token}"
+    ;;
+
+  POST:update)
+    token_ok "${token}" || fail "安全校验失败（token 不匹配）。请从本机页面重新操作。"
+    url="$(read_sub_url)"
+    [ -z "${url}" ] && fail "还没有保存过订阅地址，请先填写并保存。"
+    out="$(BOX_LOG_TO_STDOUT=1 "${scripts_dir}/box.tool" subs 2>&1 | busybox tail -n 25)"
+    send_head
+    html_result "已触发更新" "订阅地址：${url}
+
+更新输出（末尾 25 行）：
+${out}" "${token}"
+    ;;
+
+  POST:restart)
+    token_ok "${token}" || fail "安全校验失败（token 不匹配）。请从本机页面重新操作。"
+    out="$("${scripts_dir}/box.service" restart 2>&1 | busybox tail -n 15)"
+    send_head
+    html_result "已重启代理服务" "${out}" "${token}"
+    ;;
+
+  *)
+    fail "不支持的操作：${method} ${action}"
+    ;;
+esac

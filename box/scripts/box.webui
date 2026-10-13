@@ -1,0 +1,112 @@
+#!/system/bin/sh
+# Box 订阅填写页 - 本机 Web 服务管理（busybox httpd）
+# 用法: box.webui {start|stop|restart|status|url}
+# 只监听 127.0.0.1，不对外网开放
+
+scripts_dir="${0%/*}"
+source /data/adb/box/settings.ini
+
+webui_root="${box_dir}/webui"
+webui_pidfile="${box_run}/webui.pid"
+webui_log="${box_run}/webui.log"
+webui_ip="127.0.0.1"
+webui_listen_port="${webui_port:-9099}"
+
+webui_running() {
+  [ -f "${webui_pidfile}" ] || return 1
+  local pid
+  pid="$(busybox cat "${webui_pidfile}" 2>/dev/null)"
+  [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
+}
+
+gen_token() {
+  local t
+  t="$(busybox head -c 32 /dev/urandom 2>/dev/null | busybox od -An -tx1 2>/dev/null | busybox tr -d ' \n')"
+  [ -z "${t}" ] && t="$(date +%s)$(busybox cat /proc/sys/kernel/random/boot_id 2>/dev/null | busybox tr -d '-')"
+  printf '%s' "${t}" | busybox cut -c1-32
+}
+
+save_setting() {
+  local key="$1" value="$2" tmp="${settings}.webui.$$"
+  busybox awk -v k="${key}" -v v="${value}" '
+    BEGIN { done = 0 }
+    $0 ~ "^" k "=" && !done { print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "${settings}" > "${tmp}" && busybox mv "${tmp}" "${settings}"
+}
+
+webui_start() {
+  if [ "${webui_enable:-true}" != "true" ]; then
+    log Info "WebUI 已禁用（settings.ini: webui_enable=\"false\"）"
+    return 0
+  fi
+  if ! busybox --list 2>/dev/null | busybox grep -qx httpd; then
+    log Warning "当前 busybox 不带 httpd，订阅填写页不可用（仍可用 box.service sub \"链接\"）"
+    return 1
+  fi
+  if webui_running; then
+    log Debug "WebUI 已在运行: http://${webui_ip}:${webui_listen_port}/"
+    return 0
+  fi
+
+  busybox mkdir -p "${webui_root}/cgi-bin" "${box_dir}/run" >/dev/null 2>&1
+  busybox chmod 0755 "${webui_root}/cgi-bin/api" >/dev/null 2>&1
+
+  # token 为空则生成一个，写回 settings.ini（防止别的 App 乱发请求）
+  if [ -z "$(busybox sed -n 's/^webui_token="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "${settings}" | busybox head -n 1)" ]; then
+    save_setting "webui_token" "\"$(gen_token)\""
+    log Info "已生成 WebUI 访问令牌并写入 settings.ini"
+  fi
+
+  busybox mkdir -p "${box_run}" >/dev/null 2>&1
+  nohup busybox httpd -p "${webui_ip}:${webui_listen_port}" -h "${webui_root}" >"${webui_log}" 2>&1 &
+  sleep 1
+  webui_pid="$!"
+  if webui_running 2>/dev/null || kill -0 "${webui_pid}" 2>/dev/null; then
+    echo "${webui_pid}" > "${webui_pidfile}"
+    log Info "订阅填写页已启动: http://${webui_ip}:${webui_listen_port}/"
+    return 0
+  fi
+  # busybox httpd 不自留 pid 文件，用 pgrep 兜底
+  webui_pid="$(busybox pgrep -f "httpd -p ${webui_ip}:${webui_listen_port}" | busybox head -n 1)"
+  if [ -n "${webui_pid}" ]; then
+    echo "${webui_pid}" > "${webui_pidfile}"
+    log Info "订阅填写页已启动: http://${webui_ip}:${webui_listen_port}/"
+    return 0
+  fi
+  log Error "订阅填写页启动失败，请看 ${webui_log}"
+  return 1
+}
+
+webui_stop() {
+  local pid
+  pid="$(busybox cat "${webui_pidfile}" 2>/dev/null)"
+  if [ -n "${pid}" ]; then
+    kill -15 "${pid}" >/dev/null 2>&1
+    busybox rm -f "${webui_pidfile}"
+  fi
+  # 兜底清理
+  for p in $(busybox pgrep -f "httpd -p ${webui_ip}:${webui_listen_port}" 2>/dev/null); do
+    kill -15 "${p}" >/dev/null 2>&1
+  done
+  log Info "订阅填写页已停止"
+}
+
+case "$1" in
+  start) webui_start ;;
+  stop) webui_stop ;;
+  restart) webui_stop; webui_start ;;
+  status)
+    if webui_running; then
+      log Info "订阅填写页运行中: http://${webui_ip}:${webui_listen_port}/"
+    else
+      log Warning "订阅填写页未运行"
+    fi
+    ;;
+  url) printf 'http://%s:%s/\n' "${webui_ip}" "${webui_listen_port}" ;;
+  *)
+    echo "用法: $0 {start|stop|restart|status|url}"
+    exit 1
+    ;;
+esac

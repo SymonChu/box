@@ -1310,6 +1310,7 @@ start_box() {
 
 stop_box() {
   stop_cron
+  $scripts_dir/box.webui stop >/dev/null 2>&1
   for bin in "${bin_list[@]}"; do
     if busybox pgrep "${bin}" >/dev/null; then
       if busybox pkill -15 "${bin}" >/dev/null; then
@@ -1383,16 +1384,19 @@ case "$1" in
     stop_box >/dev/null 2>&1
     if start_box; then
         $scripts_dir/box.tool webroot >/dev/null 2>&1
+        $scripts_dir/box.webui start >/dev/null 2>&1
     fi
     ;;
   stop)
     stop_box
+    $scripts_dir/box.webui stop >/dev/null 2>&1
     ;;
   restart)
     "${scripts_dir}/box.iptables" disable && stop_box
     if start_box; then
       "${scripts_dir}/box.iptables" renew
       $scripts_dir/box.tool webroot >/dev/null 2>&1
+      $scripts_dir/box.webui start >/dev/null 2>&1
     fi
     ;;
   status)

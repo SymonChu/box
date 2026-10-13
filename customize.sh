@@ -62,6 +62,8 @@ set_perm_recursive /data/adb/box/scripts/ 0 3005 0755 0700
 set_perm ${service_dir}/box_service.sh 0 0 0755
 set_perm $MODPATH/uninstall.sh 0 0 0755
 chmod ugo+x ${service_dir}/box_service.sh $MODPATH/uninstall.sh /data/adb/box/scripts/*
+set_perm_recursive /data/adb/box/webui/ 0 3005 0755 0644
+set_perm /data/adb/box/webui/cgi-bin/api 0 3005 0755
 
 KEY_LISTENER_PID=""
 KEY_FIFO=""

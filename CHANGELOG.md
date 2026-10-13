@@ -1,3 +1,9 @@
+#### Changelog 1.2.11 - 13-10-2026
+- feat(webui): 新增本机订阅填写页（busybox httpd, 只监听 127.0.0.1:9099, 带访问令牌+URL 白名单），手机浏览器即可填订阅，不用改任何配置文件
+- feat(service): 启动/重启自动拉起订阅页，停止时一并关闭；模块 WebUI 入口指向订阅填写页
+- fix(cgi): urldecode 改为查表法（busybox ash 的 printf %b 不认 \xHH）
+- 设置项: webui_enable/webui_port/webui_token（settings.ini）
+
 #### Changelog 1.2.10 - 13-10-2026
 - fix(mihomo): proxy-provider 补上 proxy: DIRECT，修复订阅更新一直 403（拉订阅请求此前会被分流规则送进代理节点，等于用机场节点问机场要订阅）
 - fix(tool): update_mihomo_providers 自动生成的 provider 块同步补 proxy: DIRECT，避免覆盖用户手改
