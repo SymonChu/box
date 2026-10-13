@@ -7,6 +7,9 @@ proxy-providers:
     url: "填写订阅链接"
     path: ./proxy_provider/proxy1.yaml
     interval: 86400
+    # 必须显式直连：不写这行时，拉订阅的请求会被分流规则送进代理节点，
+    # 等于"用机场节点去问机场要订阅"，通常被回 403，导致订阅永远更新不了
+    proxy: DIRECT
     health-check:
       enable: true
       url: https://cp.cloudflare.com
@@ -19,6 +22,7 @@ proxy-providers:
   #   url: "填写订阅链接"
   #   path: ./proxy_provider/proxy2.yaml
   #   interval: 86400
+  #   proxy: DIRECT
   #   health-check:
   #     enable: true
   #     url: https://cp.cloudflare.com

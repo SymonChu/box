@@ -529,6 +529,8 @@ update_mihomo_providers() {
     url: "${escaped_url}"
     path: ${relative_path}
     interval: 86400
+    # 必须显式直连，否则订阅拉取会被分流规则送进代理节点而被回 403
+    proxy: DIRECT
     health-check:
       enable: true
       url: https://cp.cloudflare.com
