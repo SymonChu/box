@@ -1,3 +1,7 @@
+#### Changelog 1.2.10 - 13-10-2026
+- fix(mihomo): proxy-provider 补上 proxy: DIRECT，修复订阅更新一直 403（拉订阅请求此前会被分流规则送进代理节点，等于用机场节点问机场要订阅）
+- fix(tool): update_mihomo_providers 自动生成的 provider 块同步补 proxy: DIRECT，避免覆盖用户手改
+
 #### Changelog 1.2.8 - 13-06-2026
 - fix(log): 统一脚本日志输出 (dfa2661)
 - fix(net): 修复 TUN 模式下黑白名单与 fake-ip 连接异常 (ec78ef8)
