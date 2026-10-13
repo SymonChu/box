@@ -1415,6 +1415,25 @@ case "$1" in
   kcron)
     stop_cron
     ;;
+  sub)
+    # 从 WebUI 地址栏填订阅：把订阅链接写入 settings.ini 的 subscription_url_mihomo，
+    # 然后立即跑一次订阅更新。用法: box.service sub "<订阅链接>"
+    sub_url="$2"
+    if [ -z "${sub_url}" ]; then
+      echo "${red}用法: $0 sub \"<订阅链接>\"${normal}" >&2
+      exit 1
+    fi
+    case "${sub_url}" in
+      https://*|http://*) ;;
+      *) echo "${red}订阅链接必须是 http(s):// 开头${normal}" >&2; exit 1 ;;
+    esac
+    # 写入 settings.ini（覆盖第一条；多订阅场景仍可手动加 +=( ) 行）
+    busybox sed -i "s#^subscription_url_mihomo=.*#subscription_url_mihomo=(\"${sub_url}\")#" /data/adb/box/settings.ini \
+      && echo "${green}已写入 settings.ini${normal}: subscription_url_mihomo=(\"${sub_url}\")"
+    name_provide_mihomo_config=("${name_provide_mihomo_config[0]:-proxy1.yaml}")
+    update_subscription="true"
+    "${scripts_dir}/box.tool" subs && echo "${green}订阅更新完成${normal}" || echo "${red}订阅更新失败，看 ${box_run}/tool.log${normal}"
+    ;;
   *)
     echo "${red}$0 '$1' 未找到${normal}" >&2
     echo "${yellow}用法${normal}: ${green}$0${normal} {${yellow}start|stop|restart|status|cron|kcron${normal}}" >&2

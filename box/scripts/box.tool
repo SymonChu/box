@@ -2,7 +2,7 @@
 
 scripts_dir="${0%/*}"
 
-user_agent="box_for_root"
+user_agent="ClashMetaForAndroid/2.11.5"
 source /data/adb/box/settings.ini
 
 # 使用 settings.ini 中提供的 log()
